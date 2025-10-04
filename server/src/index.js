@@ -36,9 +36,6 @@ app.get('/health', (_req, res) => {
 
 app.use('/api/auth', authRoutes);
 app.use('/api/triage', triageRoutes);
-
-const PORT = process.env.PORT || 5000;
-
 // Centralized error handler to return JSON
 app.use((err, _req, res, _next) => {
   const status = err.status || 500;
@@ -46,26 +43,37 @@ app.use((err, _req, res, _next) => {
   res.status(status).json({ error: message });
 });
 
-async function start() {
-  try {
-    // Validate required envs early
-    const missing = [];
-    if (!process.env.MONGO_URI) missing.push('MONGO_URI');
-    if (!process.env.JWT_SECRET) missing.push('JWT_SECRET');
-    if (!process.env.OPENAI_API_KEY) missing.push('OPENAI_API_KEY');
-    if (missing.length) {
-      throw new Error(`Missing required env vars: ${missing.join(', ')}`);
-    }
-
-    const mongoUri = process.env.MONGO_URI;
-    const dbName = process.env.MONGO_DB_NAME || undefined;
-    await mongoose.connect(mongoUri, dbName ? { dbName } : undefined);
-    console.log('MongoDB connected');
-    app.listen(PORT, () => console.log(`Server listening on :${PORT}`));
-  } catch (err) {
-    console.error('Failed to start server:', err);
-    process.exit(1);
+// Initialize database connection at cold start (works on Vercel and local)
+let initialized = false;
+async function init() {
+  if (initialized) return;
+  // Validate required envs early
+  const missing = [];
+  if (!process.env.MONGO_URI) missing.push('MONGO_URI');
+  if (!process.env.JWT_SECRET) missing.push('JWT_SECRET');
+  if (!process.env.OPENAI_API_KEY) missing.push('OPENAI_API_KEY');
+  if (missing.length) {
+    throw new Error(`Missing required env vars: ${missing.join(', ')}`);
   }
+
+  const mongoUri = process.env.MONGO_URI;
+  const dbName = process.env.MONGO_DB_NAME || undefined;
+  await mongoose.connect(mongoUri, dbName ? { dbName } : undefined);
+  console.log('MongoDB connected');
+  initialized = true;
 }
 
-start();
+// Kick off initialization immediately (cold start)
+init().catch((err) => {
+  console.error('Failed to initialize server:', err);
+  // In serverless, throwing here surfaces a 500 on first request; keep logging instead
+});
+
+// Only start a listener when not running on Vercel (e.g., local dev)
+if (!process.env.VERCEL) {
+  const PORT = process.env.PORT || 5000;
+  app.listen(PORT, () => console.log(`Server listening on :${PORT}`));
+}
+
+// Export the app for Vercel's serverless runtime
+export default app;
