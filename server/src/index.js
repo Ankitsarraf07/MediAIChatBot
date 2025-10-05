@@ -43,7 +43,9 @@ app.use((err, _req, res, _next) => {
   res.status(status).json({ error: message });
 });
 
-// Initialize database connection at cold start (works on Vercel and local)
+// Initialize database connection with caching. For serverless (Vercel) we
+// ensure init is awaited on each invocation but reuse connections when
+// available to avoid excessive reconnects.
 let initialized = false;
 async function init() {
   if (initialized) return;
@@ -63,17 +65,30 @@ async function init() {
   initialized = true;
 }
 
-// Kick off initialization immediately (cold start)
-init().catch((err) => {
-  console.error('Failed to initialize server:', err);
-  // In serverless, throwing here surfaces a 500 on first request; keep logging instead
-});
-
 // Only start a listener when not running on Vercel (e.g., local dev)
 if (!process.env.VERCEL) {
   const PORT = process.env.PORT || 5000;
-  app.listen(PORT, () => console.log(`Server listening on :${PORT}`));
+  init()
+    .then(() => app.listen(PORT, () => console.log(`Server listening on :${PORT}`)))
+    .catch((err) => {
+      console.error('Failed to initialize server (local):', err);
+      process.exit(1);
+    });
 }
 
-// Export the app for Vercel's serverless runtime
-export default app;
+// Export a request handler that Vercel's Node runtime can call. We await
+// initialization on each invocation (it's fast when already connected) so
+// that required env checks and DB connection errors return clean 500s.
+export default async function handler(req, res) {
+  try {
+    await init();
+  } catch (err) {
+    console.error('Initialization error (request):', err);
+    // Return JSON consistent with the rest of the API
+    res.status(500).json({ error: 'Server initialization error' });
+    return;
+  }
+
+  // Delegate to the Express app instance
+  return app(req, res);
+}
