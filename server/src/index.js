@@ -34,6 +34,13 @@ app.get('/health', (_req, res) => {
   res.json({ status: 'ok', time: new Date().toISOString() });
 });
 
+// Lightweight internal status endpoint to check DB connection state
+app.get('/internal/status', (_req, res) => {
+  const stateMap = ['disconnected', 'connected', 'connecting', 'disconnecting'];
+  const rs = mongoose.connection.readyState;
+  res.json({ db: { readyState: rs, state: stateMap[rs] || 'unknown' } });
+});
+
 app.use('/api/auth', authRoutes);
 app.use('/api/triage', triageRoutes);
 // Centralized error handler to return JSON
@@ -49,7 +56,8 @@ app.use((err, _req, res, _next) => {
 let initialized = false;
 async function init() {
   if (initialized) return;
-  // Validate required envs early
+
+  // Validate essential envs early
   const missing = [];
   if (!process.env.MONGO_URI) missing.push('MONGO_URI');
   if (!process.env.JWT_SECRET) missing.push('JWT_SECRET');
@@ -60,9 +68,39 @@ async function init() {
 
   const mongoUri = process.env.MONGO_URI;
   const dbName = process.env.MONGO_DB_NAME || undefined;
-  await mongoose.connect(mongoUri, dbName ? { dbName } : undefined);
-  console.log('MongoDB connected');
-  initialized = true;
+
+  // Connection retry helpers (exponential backoff capped)
+  const MAX_DELAY = 30000; // 30s
+  let attempt = 0;
+
+  async function connectWithRetry() {
+    attempt += 1;
+    try {
+      await mongoose.connect(mongoUri, dbName ? { dbName } : undefined);
+      console.log('MongoDB connected');
+      initialized = true;
+    } catch (err) {
+      const delay = Math.min(MAX_DELAY, 1000 * 2 ** attempt);
+      console.error(`MongoDB connection attempt ${attempt} failed:`, err?.message || err);
+      console.log(`Retrying in ${delay}ms...`);
+      setTimeout(connectWithRetry, delay);
+    }
+  }
+
+  // Attach listeners to handle disconnections and attempt reconnects
+  mongoose.connection.on('disconnected', () => {
+    console.warn('Mongoose disconnected - will attempt reconnect');
+    initialized = false;
+    // start reconnect attempts if not already trying
+    connectWithRetry();
+  });
+
+  mongoose.connection.on('error', (err) => {
+    console.error('Mongoose connection error:', err);
+  });
+
+  // Start initial connect loop
+  await connectWithRetry();
 }
 
 // Only start a listener when not running on Vercel (e.g., local dev)
