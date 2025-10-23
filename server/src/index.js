@@ -9,7 +9,8 @@ import triageRoutes from './routes/triage.js';
 const app = express();
 
 // Derive allowed origins from env, respecting credentials rule
-const allowedOrigins = (process.env.CLIENT_ORIGIN || '')
+// Default includes your deployed frontend
+const allowedOrigins = (process.env.CLIENT_ORIGIN || 'https://medi-ai-chat-bot-qn3l.vercel.app')
   .split(',')
   .map((s) => s.trim())
   .filter(Boolean);
@@ -25,7 +26,7 @@ app.use(
       e.status = 403;
       return callback(e);
     },
-    credentials: allowedOrigins.length > 0,
+    credentials: true, // Enable credentials for your frontend
   })
 );
 app.use(express.json());
